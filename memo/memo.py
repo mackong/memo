@@ -4,6 +4,7 @@
 import sys
 import os
 import time
+import re
 
 from termcolor import colored, cprint
 import click
@@ -160,14 +161,23 @@ def organize_notes(ctx, param, value):
 
 
 def add_note(content, date):
+    """Add a new note into the .memo file.
+
+    The new note's status is UNDONE.
+    """
     with open(get_memo_path(), 'a') as f:
         note = Note(get_next_memo_id(), NoteStatus.UNDONE, date, content)
         f.write(str(note) + '\n')
 
 
-def add_note_from_input(input):
+def add_note_from_stdin(stdin):
+    """Add notes from stdin.
+
+    Each line read from the stdin is regards as a note,
+    and the note date is now.
+    """
     while True:
-        line = input.readline()
+        line = stdin.readline()
         if not line:
             break
 
@@ -209,13 +219,13 @@ def validate_date(ctx, param, value):
 @click.option('--date', '-d', metavar='yyyy-MM-dd',
               default=get_current_date(), callback=validate_date,
               help='The note date to add, Default is now.')
-@click.argument('input', type=click.File('rb'), required=False, default='-')
-def add(content, date, input):
+@click.argument('stdin', type=click.File('rb'), required=False, default='-')
+def add(content, date, stdin):
     """Add note from options or stdin."""
     if content:
         add_note(content, date)
     else:
-        add_note_from_input(input)
+        add_note_from_stdin(stdin)
 
 
 def get_line_color(is_odd_line):
@@ -248,9 +258,8 @@ def dump_organized(date, notes, is_odd_line):
         cprint('\t%s' % note.trim_date(), color)
 
 
-def show_notes():
-    """Show all notes."""
-    notes = get_all_notes()
+def show_notes(notes):
+    """Show notes."""
     if len(notes):
         for i, note in enumerate(notes):
             dump_note(note, is_odd(i))
@@ -258,14 +267,14 @@ def show_notes():
         cprint('You don\'t have any notes currently.', 'red')
 
 
+def show_all():
+    """Show all notes."""
+    show_notes(get_all_notes())
+
+
 def show_latest(n):
     """Show latest n notes."""
-    notes = get_all_notes()
-    if len(notes):
-        for i, note in enumerate(notes[n + 1:]):
-            dump_note(note, is_odd(i))
-    else:
-        cprint('You don\'t have any notes currently.', 'red')
+    show_notes(get_all_notes()[n+1:])
 
 
 def show_organized():
@@ -287,27 +296,19 @@ def show_organized():
 
 def show_unpostponed():
     """Show all notes except POSTPONED."""
-    notes = get_all_notes()
-    if len(notes):
-        for i, note in enumerate(notes):
-            if note.status != NoteStatus.POSTPONED:
-                dump_note(note, is_odd(i))
-    else:
-        cprint('You don\'t have any notes currently.', 'red')
+    show_notes([note for note in get_all_notes()
+                if note.status != NoteStatus.POSTPONED])
 
 
 def show_undone():
     """Show all notes except UNDONE."""
-    notes = get_all_notes()
-    if len(notes):
-        for i, note in enumerate(notes):
-            if note.status == NoteStatus.UNDONE:
-                dump_note(note, is_odd(i))
-    else:
-        cprint('You don\'t have any notes currently.', 'red')
+    show_notes([note for note in get_all_notes()
+                if note.status == NoteStatus.UNDONE])
 
 
 @click.command()
+@click.option('--all', '-a', is_flag=True,
+              help='Show all notes, same as simple run `memo show`')
 @click.option('--latest', '-l', default=0, metavar='n',
               help='Show latest n notes.')
 @click.option('--organized', '-o', is_flag=True,
@@ -316,9 +317,11 @@ def show_undone():
               help='Show all notes except postponed.')
 @click.option('--undone', '-u', is_flag=True,
               help='Show only undone notes.')
-def show(latest, organized, unpostponed, undone):
+def show(all, latest, organized, unpostponed, undone):
     """Show the notes already taken."""
-    if latest:
+    if all:
+        show_all()
+    elif latest:
         show_latest(latest)
     elif organized:
         show_organized()
@@ -327,7 +330,7 @@ def show(latest, organized, unpostponed, undone):
     elif undone:
         show_undone()
     else:
-        show_notes()
+        show_all()
 
 
 def delete_all_notes():
@@ -352,12 +355,110 @@ def delete_note(id):
 @click.option('--all', '-a', is_flag=True,
               help='Delete all notes.')
 @click.argument('id', required=False, type=int)
-def delete(all, id):
+@click.pass_context
+def delete(ctx, all, id):
     """Delete note by id or delete all notes."""
     if all:
         delete_all_notes()
-    else:
+    elif id is not None:
         delete_note(id)
+    else:
+        print(ctx.get_help())
+
+
+def mark_all(status):
+    """Mark all notes as status."""
+    notes = get_all_notes()
+    with open(get_memo_path(), 'w') as f:
+        for note in notes:
+            note.status = status
+            f.write(str(note) + '\n')
+
+
+def mark_note_status(id, status):
+    """Mark note as status by id."""
+    notes = get_all_notes()
+    with open(get_memo_path(), 'w') as f:
+        for note in notes:
+            if note.id == id:
+                note.status = status
+            f.write(str(note) + '\n')
+
+
+def mark_done(id):
+    """Mark note as DONE."""
+    mark_note_status(id, NoteStatus.DONE)
+    
+
+def mark_undone(id):
+    """Mark note as UNDONE."""
+    mark_note_status(id, NoteStatus.UNDONE)
+
+
+def mark_postponed(id):
+    """Mark note as POSTPONED."""
+    mark_note_status(id, NoteStatus.POSTPONED)
+
+    
+@click.command()
+@click.option('--all', '-a', 
+              type=click.Choice([NoteStatus.DONE, NoteStatus.UNDONE, NoteStatus.POSTPONED]),
+              help='Mark all notes as the STATUS.')
+@click.option('--done', '-d', is_flag=True,
+              help='Mark note as DONE.')
+@click.option('--undone', '-u', is_flag=True,
+              help='Mark note as UNDONE.')
+@click.option('--postponed', '-p', is_flag=True,
+              help='Mark note as POSTPONED.')
+@click.argument('id', required=False, type=int)
+@click.pass_context
+def mark(ctx, all, done, undone, postponed, id):
+    """Mark note(s) as another STATUS."""
+    if all:
+        mark_all(all)
+    elif id is not None:
+        if done:
+            mark_done(id)
+        elif undone:
+            mark_undone(id)
+        elif postponed:
+            mark_postponed(id)
+        else:
+            print(ctx.get_help())
+    else:
+        print(ctx.get_help())
+
+
+def search_notes(key):
+    """Search notes by key."""
+    show_notes([note for note in get_all_notes()
+                if note.date.find(key) != -1 or
+                note.content.find(key) != -1])
+
+
+def search_regexp(key):
+    """Search notes by regular expression."""
+    notes_to_show = []
+    pattern = re.compile(key, re.I)
+
+    for note in get_all_notes():
+        if pattern.match(note.content):
+            notes_to_show.append(note)
+
+    show_notes(notes_to_show)
+
+
+@click.command()
+@click.option('--regexp', '-r', is_flag=True,
+              help='Search the notes use regular expression.')
+@click.argument('key')
+def search(regexp, key):
+    """Search notes by key or regular expression(python)."""
+    if regexp:
+        search_regexp(key)
+    else:
+        search_notes(key)
+        
 
 # Context setting for Click command.
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
@@ -381,9 +482,13 @@ def main():
         open(memo_path, 'w')
 
 
+# Sub commands
 main.add_command(add)
 main.add_command(show)
 main.add_command(delete)
+main.add_command(mark)
+main.add_command(search)
+
 
 if __name__ == '__main__':
     main()
